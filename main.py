@@ -2,60 +2,104 @@ import cv2
 import mediapipe as mp
 import commands
 import asyncio
+import numpy
+from numpy import ndarray
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from commands import MediaData
-def main():
-    mp_drawing = mp.solutions.drawing_utils
-    mp_hands = mp.solutions.hands
 
 
-    # Настройки для распознавания рук
-    hands = mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+
+def union(background, foreground,x,y, x2,y2):
+    y = int(y*background.shape[0])
+    x = int(x*background.shape[1])
+    y2 = int(y2 * background.shape[0])
+    x2 = int(x2 * background.shape[1])
+    length = int(((x-x2)**2 + (y-y2)**2)**0.5)
+    foreground = cv2.resize(foreground, (length, length))
+    x -= length//2
+    y -= length//2
+    if (y >= background.shape[0] or x >= background.shape[1]
+            or x+length<=0 or y+length<=0):
+        print("защита")
+        print(x+length//2)
+        return
+
+    if y < 0:
+        foreground = foreground[-y:, :]
+        y = 0
+    if x < 0:
+        foreground = foreground[:,-x:]
+        print(foreground.shape, x)
+        x = 0
+
+    h, w = foreground.shape[:2]
+    if y + h > background.shape[0]:
+        h = background.shape[0] - y
+        foreground = foreground[:h]
+    if x + w > background.shape[1]:
+        w = background.shape[1] - x
+        foreground = foreground[:,:w]
+    # print(x,y,w,h,foreground.shape[:2])
+    #
+    # print(foreground.shape)
+    b, g, r, a = cv2.split(foreground) # получаем матрицы каждого канала
+    alpha = a / 255.0  # получаем матрицу альфа-каналов foreground
+    # классическая формула альфа-смешивания:
+    # result = alpha * foreground + (1 - alpha) * background
+    background[y:y + h, x:x + w] = ( # берем пиксель по координатам (y между y+h) и (x между x+w) назначаем ему
+            alpha[:, :, None] * # берем значение альфа-канала с переднего плана пикселя который будет находиться над
+            foreground[:, :, :3] + # берем 3 канала пикселя с переднего плана который будет находиться над
+            (1 - alpha[:, :, None]) *
+            background[y:y + h, x:x + w]
     )
+    # берем диапазон фона на который попадает изображение переднего плана и используем к нему формулу
 
+mediaCommands: commands.Commands = commands.Commands()
+
+async def main():
+    BaseOptions = mp.tasks.BaseOptions
+    HandLandmarker = mp.tasks.vision.HandLandmarker
+    HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+    HandLandmarkerResult = mp.tasks.vision.HandLandmarkerResult
+    VisionRunningMode = mp.tasks.vision.RunningMode
+    await mediaCommands.init()
     cap = cv2.VideoCapture(0)
+    latest_result: HandLandmarkerResult = None
+    # Create a hand landmarker instance with the live stream mode:
+    def print_result(result: HandLandmarkerResult, output_image: mp.Image, timestamp_ms: int):
+        nonlocal latest_result
+        latest_result = result
 
-    while cap.isOpened():
-        success, image = cap.read()
-        if not success:
-            break
+    options = HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
+        running_mode=VisionRunningMode.LIVE_STREAM,
+        result_callback=print_result,
+        num_hands=2)
+    with HandLandmarker.create_from_options(options) as landmarker:
+        while True:
+            success, image = cap.read()
+            image = cv2.flip(image, 1)
+            rgb_frame = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            landmarker.detect_async(mp_image, int(cv2.getTickCount() / cv2.getTickFrequency() * 1000))
+            if latest_result is not None and latest_result.handedness:
+                for i in range(len(latest_result.handedness[0])):
+                    if latest_result.handedness[0][i].category_name == 'Left':
+                        hand = latest_result.hand_landmarks[i]
+                        union(image, mediaCommands.indexIcon, x=hand[8].x, y=hand[8].y, x2=hand[7].x, y2=hand[7].y)
+                        union(image, mediaCommands.middleIcon, x=hand[12].x, y=hand[12].y, x2=hand[11].x, y2=hand[11].y)
+                        union(image, mediaCommands.ringIcon, x=hand[16].x, y=hand[16].y, x2=hand[15].x, y2=hand[15].y)
 
-        # Конвертация BGR в RGB
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image.flags.writeable = False
 
-        # Обработка изображения
-        results = hands.process(image)
+            cv2.imshow('frame', image)
+            cv2.waitKey(1)
 
-        # Конвертация обратно в BGR
-        image.flags.writeable = True
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-        # Отрисовка результатов
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                mp_drawing.draw_landmarks(
-                    image,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2)
-                )
+# The landmarker is initialized. Use it here.
+# ...
 
-        cv2.imshow('Hand Tracking', image)
-        if cv2.waitKey(5) & 0xFF == 27:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-    hands.close()
 
 if '__main__' == __name__:
-    mediaCommands = commands.Commands()
-    asyncio.run(mediaCommands.init())
-    asyncio.run(mediaCommands.middleFinger())
-    print(asyncio.run(mediaCommands.getData()).volume)
+    asyncio.run(main())
 

@@ -14,24 +14,40 @@ from PIL import ImageFont, ImageDraw, Image
 
 image:ndarray = None
 def putText(
-    cv2_img, text_img,text_position_x, text_position_y,):
+    cv2_img, text_img,x, y,w,h):
 
     text_height, text_width = text_img.shape[:2]
+    x = x - (text_width-w)//2
+    y = y - (text_height - h)//2
+    cv2.rectangle(cv2_img, (x, y), (x + text_width, y + text_height), (0, 0, 0), 2)
+    if x > cv2_img.shape[1] or y > cv2_img.shape[0]:
+        return
+    if x < 0:
+        text_width = text_width + x
+        text_img = text_img[:,-text_width:]
+        x = 0
+    if y<0:
+        text_height = text_height + y
+        text_img = text_img[-text_height:,:]
+        y = 0
 
     # Проверка размера текста перед вставкой
-    if (text_position_y + text_height > cv2_img.shape[0]):
-        text_img = text_img[:cv2_img.shape[0] - text_position_y, :]
+    if (y + text_height > cv2_img.shape[0]):
+        text_img = text_img[:cv2_img.shape[0] - y, :]
         text_height = text_img.shape[0]
-    if (text_position_x + text_width > cv2_img.shape[1]):
-        text_img = text_img[:, :(cv2_img.shape[1] - text_position_x)]
+    if (x + text_width > cv2_img.shape[1]):
+        text_img = text_img[:, :(cv2_img.shape[1] - x)]
         text_width = text_img.shape[1]
 
     # Обработка альфа-канала
     alpha = text_img[:, :, 3] / 255.0
-    for c in range(3):
-        cv2_img[text_position_y:text_position_y + text_height, text_position_x:text_position_x + text_width, c] = \
-            cv2_img[text_position_y:text_position_y + text_height, text_position_x:text_position_x + text_width, c] * \
-            (1 - alpha) + text_img[:, :, c] * alpha
+    try:
+        for c in range(3):
+            cv2_img[y:y + text_height, x:x + text_width, c] = \
+                cv2_img[y:y + text_height, x:x + text_width, c] * \
+                (1 - alpha) + text_img[:, :, c] * alpha
+    except:
+        print(x, y)
 
 def getSquare(index, pinky, wrist):
     index = (index[0]*image.shape[1], index[1]*image.shape[0])
@@ -42,12 +58,10 @@ def getSquare(index, pinky, wrist):
 
 def union(finger:Finger):
     global image
-    x,y,w,h=finger.visualBox
-    foreground = finger.icon
-    try:
-        foreground = cv2.resize(foreground, (w,h))
-    except:
-        print(w,h)
+    if finger.visualBox is None:
+        return
+    x,y,w,h=finger.collisionBox
+    foreground = finger.visualBox
     b, g, r, a = cv2.split(foreground)  # получаем матрицы каждого канала
     alpha = a / 255.0  # получаем матрицу альфа-каналов foreground
     # классическая формула альфа-смешивания:
@@ -142,7 +156,8 @@ async def main():
                     if handedness[0].category_name == 'Right':
                         hand = hand_landmarks
                         square = getSquare(index=(hand[5].x,hand[5].y), pinky=(hand[17].x, hand[17].y), wrist=(hand[0].x, hand[0].y))
-                        putText(image, mediaCommands.image, square[0],square[1])
+                        cv2.rectangle(image, (square[0], square[1]), (square[0] + square[2], square[1] + square[3]), (0, 0, 0), 2)
+                        putText(image, mediaCommands.image, square[0],square[1],square[2],square[3])
             cv2.imshow('frame', image)
             cv2.waitKey(1)
 

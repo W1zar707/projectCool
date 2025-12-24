@@ -10,7 +10,7 @@ from PIL import ImageFont, ImageDraw, Image
 import numpy
 
 
-def add_text_to_image(artist, trackname,  font_size, colour, background_color=(255, 255, 255), transparency=0, line_spacing = 10,font_path= 'font.ttf',):
+def add_text_to_image(artist, trackname,  font_size, colour, background_color=(255, 255, 255), transparency=5, line_spacing = 0,font_path= 'font.ttf',):
     # Создаем временное изображение для определения размеров текста
     font = ImageFont.truetype(font_path, font_size)
 
@@ -18,28 +18,29 @@ def add_text_to_image(artist, trackname,  font_size, colour, background_color=(2
     draw = ImageDraw.Draw(dummy_img)
 
     # Размеры первой строки (artist)
-    bbox1 = draw.textbbox((0, 0), artist, font=font)
+    bbox1 = draw.textbbox((0, 0), trackname, font=font)
     width1 = bbox1[2] - bbox1[0]
     height1 = bbox1[3] - bbox1[1]
 
     # Размеры второй строки (trackname)
-    bbox2 = draw.textbbox((0, 0), trackname, font=font)
+    bbox2 = draw.textbbox((0, 0), artist, font=font)
     width2 = bbox2[2] - bbox2[0]
     height2 = bbox2[3] - bbox2[1]
 
     # Общая ширина и высота
     total_width = max(width1, width2)
-    total_height = height1 + line_spacing + height2
+    total_height = -bbox1[1]+height1 + line_spacing + height2+bbox2[1]
+
+
 
     # Создаём финальное изображение с фоном
     text_img = Image.new('RGBA', (total_width, total_height), background_color + (transparency,))
     draw = ImageDraw.Draw(text_img)
-
     # Рисуем первую строку (artist) — по левому краю, сверху
-    draw.text((-bbox1[0], -bbox1[1]), artist, font=font, fill=colour)
+    draw.text((-bbox1[0]+(total_width-width1)//2, -bbox1[1]), trackname, font=font, fill=colour)
 
     # Рисуем вторую строку (trackname) — под первой
-    draw.text((-bbox2[0], -bbox1[1] + height1 + line_spacing), trackname, font=font, fill=colour)
+    draw.text((-bbox2[0]+(total_width-width2)//2, -bbox1[1] + height1 + line_spacing), artist, font=font, fill=colour)
 
     return numpy.array(text_img)  # Возвращаем как numpy array (RGBA)
 
@@ -74,8 +75,17 @@ class Commands:
             controls = self.current_session.get_playback_info().controls
             if controls.is_next_enabled:
                 result = await self.current_session.try_skip_previous_async()
+                await self.getData()
+        if self.current_session is None:
+            await self.init()
+            await self.indexFinger()
+            return
 
     async def middleFinger(self):
+        if self.current_session is None:
+            await self.init()
+            await self.middleFinger()
+            return
         playback_info = self.current_session.get_playback_info()
         if playback_info.playback_status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING:
             result = await self.current_session.try_pause_async()
@@ -90,11 +100,19 @@ class Commands:
             controls = self.current_session.get_playback_info().controls
             if controls.is_next_enabled:
                 result = await self.current_session.try_skip_next_async()
+                await self.getData()
+        if self.current_session is None:
+            await self.init()
+            await self.ringFinger()
+            return
 
     async def setVolume(self, volume):
         pass
 
     async def getData(self):
+        if self.current_session is None:
+            self.image = add_text_to_image(artist="Нет артиста", trackname="Нет названия",font_size=36, colour=(255,255,255))
+            return
         properties = await self.current_session.try_get_media_properties_async()
         device = AudioUtilities.GetSpeakers()
 

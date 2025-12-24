@@ -1,5 +1,7 @@
 import cv2
 import mediapipe as mp
+from numpy.testing.print_coercion_tables import print_coercion_table
+
 import commands
 import asyncio
 import numpy
@@ -7,19 +9,45 @@ from numpy import ndarray
 from finger import Finger
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from commands import MediaData
+import commands
+from PIL import ImageFont, ImageDraw, Image
 
 image:ndarray = None
+def putText(
+    cv2_img, text_img,text_position_x, text_position_y,):
 
+    text_height, text_width = text_img.shape[:2]
 
+    # Проверка размера текста перед вставкой
+    if (text_position_y + text_height > cv2_img.shape[0]):
+        text_img = text_img[:cv2_img.shape[0] - text_position_y, :]
+        text_height = text_img.shape[0]
+    if (text_position_x + text_width > cv2_img.shape[1]):
+        text_img = text_img[:, :(cv2_img.shape[1] - text_position_x)]
+        text_width = text_img.shape[1]
 
-def vector(x,y,x2,y2)->int:
-    return int(((x-x2)**2 + (y-y2)**2)**0.5)
+    # Обработка альфа-канала
+    alpha = text_img[:, :, 3] / 255.0
+    for c in range(3):
+        cv2_img[text_position_y:text_position_y + text_height, text_position_x:text_position_x + text_width, c] = \
+            cv2_img[text_position_y:text_position_y + text_height, text_position_x:text_position_x + text_width, c] * \
+            (1 - alpha) + text_img[:, :, c] * alpha
 
-def union(foreground, finger):
+def getSquare(index, pinky, wrist):
+    index = (index[0]*image.shape[1], index[1]*image.shape[0])
+    pinky = (pinky[0] * image.shape[1], pinky[1] * image.shape[0])
+    wrist = (wrist[0] * image.shape[1], wrist[1] * image.shape[0])
+    points = numpy.array([index, pinky, wrist], dtype=numpy.float32)
+    return cv2.boundingRect(points)
+
+def union(finger:Finger):
     global image
-    x,y,w,h=finger.box
-    foreground = cv2.resize(foreground, (w,h))
+    x,y,w,h=finger.visualBox
+    foreground = finger.icon
+    try:
+        foreground = cv2.resize(foreground, (w,h))
+    except:
+        print(w,h)
     b, g, r, a = cv2.split(foreground)  # получаем матрицы каждого канала
     alpha = a / 255.0  # получаем матрицу альфа-каналов foreground
     # классическая формула альфа-смешивания:
@@ -31,7 +59,7 @@ def union(foreground, finger):
             image[y:y + h, x:x + w]
     )
 
-def isCollision(finger1,finger2) -> bool:
+def isCollision(finger1: Finger,finger2:Finger) -> bool:
     '''
     Чтобы понять, пересекаются ли они, мы ищем общую часть — маленький прямоугольник, который принадлежит и A, и B одновременно.
     Этот общий прямоугольник должен начинаться:
@@ -43,39 +71,13 @@ def isCollision(finger1,finger2) -> bool:
     Берём минимум из правых краёв: min(300, 400) = 300
     → inter_x_right = 300
     '''
-    x1, y1, w1, h1 = finger1.box
-    x2, y2, w2, h2 = finger2.box
+    x1, y1, w1, h1 = finger1.collisionBox
+    x2, y2, w2, h2 = finger2.collisionBox
     inter_x_left = max(x1, x2)
     inter_y_top = max(y1, y2)
     inter_x_right = min(x1 + w1, x2 + w2)
     inter_y_bottom = min(y1 + h1, y2 + h2)
     return (inter_x_right > inter_x_left) and (inter_y_bottom > inter_y_top)
-
-def createBox(x,y,x2,y2):
-    global image
-    y = int(y * image.shape[0])
-    x = int(x * image.shape[1])
-    y2 = int(y2 * image.shape[0])
-    x2 = int(x2 * image.shape[1])
-    radius = vector(x,y,x2,y2)
-    height = radius * 2
-    width = radius * 2
-    print(radius)
-    x -= radius
-    y -= radius
-    if x>image.shape[1] or y>image.shape[0]:
-        return
-    if x<0:
-        width = width+x
-        x = 0
-    if y<0:
-        height = height+y
-        y = 0
-    if x+width>image.shape[1]:
-        width = image.shape[1]-x
-    if x+height>image.shape[0]:
-        height = image.shape[0]-y
-    return (x,y,width,height)
 
 mediaCommands: commands.Commands = commands.Commands()
 
@@ -101,8 +103,13 @@ async def main():
         base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
         running_mode=VisionRunningMode.LIVE_STREAM,
         result_callback=print_result,
-        num_hands=2)
+        num_hands=4)
     with HandLandmarker.create_from_options(options) as landmarker:
+        fingers = {"index": Finger(icon=(mediaCommands, "indexIcon"), command=mediaCommands.indexFinger),
+                   "middle": Finger(icon = (mediaCommands, "middleIcon"), command = mediaCommands.middleFinger),
+                   "ring": Finger(icon=(mediaCommands, "ringIcon"), command=mediaCommands.ringFinger),
+                   "thumb": Finger(icon=None, command=None)
+                   }
         while True:
             success, image = cap.read()
             image = cv2.flip(image, 1)
@@ -111,42 +118,31 @@ async def main():
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
             landmarker.detect_async(mp_image, int(cv2.getTickCount() / cv2.getTickFrequency() * 1000))
             if latest_result is not None and latest_result.handedness:
-                for i in range(len(latest_result.handedness[0])):
-                    if latest_result.handedness[0][i].category_name == 'Left':
-                        hand = latest_result.hand_landmarks[i]
-                        fingersBoxes = {"index": Finger((hand[8].x, hand[8].y, hand[7].x, hand[7].y)),
-                                   "middle": Finger((hand[12].x, hand[12].y, hand[11].x, hand[11].y)),
-                                   "ring": Finger((hand[16].x, hand[16].y, hand[15].x, hand[15].y)),
-                                   "thumb": Finger((hand[4].x, hand[4].y, hand[3].x, hand[3].y))
-                                   }
-                        union(mediaCommands.indexIcon, fingersBoxes["index"])
-                        union(mediaCommands.middleIcon, fingersBoxes["middle"])
-                        union(mediaCommands.ringIcon, fingersBoxes["ring"])
-                        if isCollision(fingersBoxes["index"],fingersBoxes["thumb"]):
-                            if fingersBoxes["index"].isPressed == False:
-                                fingersBoxes["index"].isPressed = True
-                                await mediaCommands.indexFinger()
-                            elif fingersBoxes["index"].isPressed == True:
-                                pass
-                        elif isCollision(fingersBoxes["middle"],fingersBoxes["thumb"]):
-                            if fingersBoxes["middle"].isPressed == False:
-                                fingersBoxes["middle"].isPressed = True
-                                await mediaCommands.middleFinger()
-                                print("Пауза")
-                            elif fingersBoxes["middle"].isPressed == True:
-                                pass
-                        elif isCollision(fingersBoxes["ring"],fingersBoxes["thumb"]):
-                            if fingersBoxes["ring"].isPressed == False:
-                                fingersBoxes["ring"].isPressed = True
-                                await mediaCommands.ringFinger()
-                            elif fingersBoxes["ring"].isPressed == True:
-                                pass
-                        else:
-                            print("Условия нет")
-                            fingersBoxes["index"].isPressed = False
-                            fingersBoxes["middle"].isPressed = False
-                            fingersBoxes["ring"].isPressed = False
-
+                for handedness, hand_landmarks in zip(latest_result.handedness, latest_result.hand_landmarks):
+                    if handedness[0].category_name == 'Left':
+                        hand = hand_landmarks
+                        fingers["index"].createBoxes(hand[8].x, hand[8].y, hand[7].x, hand[7].y)
+                        fingers["middle"].createBoxes(hand[12].x, hand[12].y, hand[11].x, hand[11].y)
+                        fingers["ring"].createBoxes(hand[16].x, hand[16].y, hand[15].x, hand[15].y)
+                        fingers["thumb"].createBoxes(hand[4].x, hand[4].y, hand[3].x, hand[3].y)
+                        checkFingers = ["index", "middle", "ring"]
+                        pressedFinger = None
+                        for finger in checkFingers:
+                            union(fingers[finger])
+                            if isCollision(fingers[finger], fingers["thumb"]):
+                                pressedFinger = fingers[finger]
+                        if pressedFinger is None:
+                            for finger in checkFingers:
+                                fingers[finger].isPressed = False
+                        elif pressedFinger.isPressed == False:
+                            pressedFinger.isPressed = True
+                            await pressedFinger.command()
+                        elif pressedFinger.isPressed == True:
+                            print("Палец уже нажат")
+                    if handedness[0].category_name == 'Right':
+                        hand = hand_landmarks
+                        square = getSquare(index=(hand[5].x,hand[5].y), pinky=(hand[17].x, hand[17].y), wrist=(hand[0].x, hand[0].y))
+                        putText(image, mediaCommands.image, square[0],square[1])
             cv2.imshow('frame', image)
             cv2.waitKey(1)
 

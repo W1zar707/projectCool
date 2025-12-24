@@ -6,7 +6,42 @@ from winsdk.windows.media.control import (
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
     GlobalSystemMediaTransportControlsSessionMediaProperties
 )
+from PIL import ImageFont, ImageDraw, Image
+import numpy
 
+
+def add_text_to_image(artist, trackname,  font_size, colour, background_color=(255, 255, 255), transparency=0, line_spacing = 10,font_path= 'font.ttf',):
+    # Создаем временное изображение для определения размеров текста
+    font = ImageFont.truetype(font_path, font_size)
+
+    dummy_img = Image.new('RGBA', (1, 1))
+    draw = ImageDraw.Draw(dummy_img)
+
+    # Размеры первой строки (artist)
+    bbox1 = draw.textbbox((0, 0), artist, font=font)
+    width1 = bbox1[2] - bbox1[0]
+    height1 = bbox1[3] - bbox1[1]
+
+    # Размеры второй строки (trackname)
+    bbox2 = draw.textbbox((0, 0), trackname, font=font)
+    width2 = bbox2[2] - bbox2[0]
+    height2 = bbox2[3] - bbox2[1]
+
+    # Общая ширина и высота
+    total_width = max(width1, width2)
+    total_height = height1 + line_spacing + height2
+
+    # Создаём финальное изображение с фоном
+    text_img = Image.new('RGBA', (total_width, total_height), background_color + (transparency,))
+    draw = ImageDraw.Draw(text_img)
+
+    # Рисуем первую строку (artist) — по левому краю, сверху
+    draw.text((-bbox1[0], -bbox1[1]), artist, font=font, fill=colour)
+
+    # Рисуем вторую строку (trackname) — под первой
+    draw.text((-bbox2[0], -bbox1[1] + height1 + line_spacing), trackname, font=font, fill=colour)
+
+    return numpy.array(text_img)  # Возвращаем как numpy array (RGBA)
 
 class MediaData:
     def __init__(self, trackData: GlobalSystemMediaTransportControlsSessionMediaProperties, volume):
@@ -19,6 +54,9 @@ class Commands:
     async def init(self):
         sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
         self.current_session = sessions.get_current_session()
+        sessions.add_current_session_changed(self.getData)
+        self.image = None
+        await self.getData()
         self.indexIcon = cv2.imread("previous.png", cv2.IMREAD_UNCHANGED)
         self.ringIcon = cv2.imread("next.png", cv2.IMREAD_UNCHANGED)
         try:
@@ -28,8 +66,6 @@ class Commands:
                 self.middleIcon = cv2.imread("pause.png", cv2.IMREAD_UNCHANGED)
         except AttributeError:
             self.middleIcon = cv2.imread("play.png", cv2.IMREAD_UNCHANGED)
-        finally:
-            self.middleIcon = cv2.resize(self.middleIcon, (80,80))
 
 
     async def indexFinger(self):
@@ -58,7 +94,7 @@ class Commands:
     async def setVolume(self, volume):
         pass
 
-    async def getData(self) -> MediaData:
+    async def getData(self):
         properties = await self.current_session.try_get_media_properties_async()
         device = AudioUtilities.GetSpeakers()
 
@@ -68,4 +104,5 @@ class Commands:
         # Получаем текущую громкость (от 0.0 до 1.0)
         current_volume = volume_interface.GetMasterVolumeLevelScalar()
         mediaData = MediaData(properties, round(current_volume * 100))
-        return mediaData
+        self.image = add_text_to_image(artist=mediaData.artist, trackname=mediaData.trackName,font_size=36, colour=(255,255,255))
+
